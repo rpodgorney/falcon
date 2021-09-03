@@ -16,7 +16,6 @@ class TerrainData:
     surface: int          # intrger tags of the generated surface
     boundaries: list      # integer tags of the boundaries of the surface
     points: numpy.ndarray # integer tags of the points that defined the surface
-    name: str             # name of the surface
 
 def get_arguments():
     """
@@ -24,12 +23,15 @@ def get_arguments():
     """
 
     parser = argparse.ArgumentParser(description="Create 3D mesh from terrain defined by surfaces.")
-    parser.add_argument("file_names", metavar='XYZ_file.csv', type=str, nargs='+',
+    parser.add_argument("file_names", metavar='XYZ', type=str, nargs='+',
                         help="List of file names that define terrain surfaces from bottom to top.")
-    parser.add_argument("--surface_names", metavar='name', type=str, nargs='+',
-                        help=("List of the surface names, if provided it must be the same length as "
-                              "'file_names'. If not provided the supplied 'file_names' (without the "
-                              "extension) are utilized."))
+
+    parser.add_argument("-o", "--output", type=str,
+                        help="The name of the Gmsh mesh file to create.")
+
+    parser.add_argument("--show", action='store_true',
+                        help="Open the interactive Gmsh window.")
+
     parser.add_argument("--num_elements", metavar='n', type=int, nargs='+',
                         help=("The desired number of elements within a grid (n by n) for the "
                               "surface(s) If a single value is given it shall be applied to all "
@@ -37,11 +39,23 @@ def get_arguments():
                               "option must NOT be used with the '--mesh_size' option. If "
                               "'--mesh_size' is not provided this option defaults to 50 elements, "
                               "resulting in a 50 by 50 grid."))
+
     parser.add_argument("--mesh_size", metavar='h', type=float, nargs='+',
                         help=("The desired element size for the surface(s). If a single value "
                               "is given it shall be applied to all surfaces, otherwise one value "
                               "per 'file_name' must be given. This option must NOT be used with "
                               "the '--num_elements' option."))
+
+    parser.add_argument("--surface_names", metavar='name', type=str, nargs='+',
+                        help=("List of the surface names, if provided it must be the same length as "
+                              "'file_names'. If not provided the supplied 'file_names' (without the "
+                              "extension) are utilized."))
+
+    parser.add_argument("--volume_names", metavar='name', type=str, nargs='+',
+                        help=("The desired volume subdomain name(s). If not supplied names are "
+                              "automatically added using the file name(s). If supplied the number "
+                              "entries must be one less than the number of files."))
+
     args = parser.parse_args()
 
     # Need two files
@@ -56,13 +70,9 @@ def get_arguments():
         msg = "The following supplied 'file_names' do not exist: {}"
         raise IOError(msg.format(' '.join(no_exist)))
 
-    # Surface names
-    n_names = len(args.surface_names) if args.surface_names else 0
-    if n_names > 0 and (n_files != n_names):
-        msg = "The number of 'surface_names' must be the same as the number of 'file_names'."
-        raise IOError(msg)
-    elif n_names == 0:
-        args.surface_names = [os.path.splitext(file_name)[0] for file_name in args.file_names]
+    # Output or show should be supplied
+    if not args.output:
+        args.show = True
 
     # Element/mesh size
     if args.num_elements and args.mesh_size:
@@ -82,14 +92,30 @@ def get_arguments():
         args.num_elements = [None]*n_files # see main
 
     if args.mesh_size:
-        if len(mesh_size) == 1:
+        if len(args.mesh_size) == 1:
             args.mesh_size = [args.mesh_size[0]]*n_files
-        elif len(mesh_size) != n_files:
+        elif len(args.mesh_size) != n_files:
             msg = ("The number of entries in 'mesh_size' must be one or the same as the number "
                    "'file_names'.")
             raise IOError(msg)
     else:
         args.mesh_size = [None]*n_files # see main
+
+    # Surface names
+    n_names = len(args.surface_names) if args.surface_names else 0
+    if n_names > 0 and (n_files != n_names):
+        msg = "The number of 'surface_names' must be the same as the number of 'file_names'."
+        raise IOError(msg)
+    elif n_names == 0:
+        args.surface_names = [os.path.splitext(file_name)[0] for file_name in args.file_names]
+
+    # Volume names
+    n_volumes = len(args.volume_names) if args.volume_names else 0
+    if n_volumes > 0 and (n_files - 1 != n_volumes):
+        msg = "The number of 'volume_names' must be one less then the number of 'file_names'."
+        raise IOError(msg)
+    elif n_volumes == 0:
+        args.volume_names = [f"{os.path.splitext(args.file_names[i])[0]}_{os.path.splitext(args.file_names[i+1])[0]}" for i in range(n_files-1)]
 
     return args
 
@@ -98,50 +124,52 @@ def main():
     args = get_arguments()
 
     gmsh.initialize()
-    gmsh.model.add('terrain')
+    gmsh.model.add(args.output or 'terrain')
 
     # Build terrain surfaces
     tdata = list()
-    for file_name, surface_name, num_elements, mesh_size in zip(args.file_names, args.surface_names, args.num_elements, args.mesh_size):
-        tdata.append(build_terrain_surface(file_name, surface_name, num_elements=num_elements, mesh_size=mesh_size))
+    for file_name, num_elements, mesh_size in zip(args.file_names, args.num_elements, args.mesh_size):
+        tdata.append(build_terrain_surface(file_name, num_elements=num_elements, mesh_size=mesh_size))
 
     # Build side surface
     n_volumes = len(tdata) - 1
-    surfaces = [None]*n_volumes
+    sides = [None]*n_volumes
     for i in range(n_volumes):
-        surfaces[i] = [tdata[i].surface, tdata[i+1].surface]
-        surfaces[i] += build_side_surfaces(tdata[i].boundaries, tdata[i].points, tdata[i+1].boundaries, tdata[i+1].points)
+        sides[i] = build_side_surfaces(tdata[i].boundaries, tdata[i].points, tdata[i+1].boundaries, tdata[i+1].points)
 
     # Build volumes
     gmsh.model.occ.removeAllDuplicates()
+    volumes = [None]*n_volumes
     for i in range(n_volumes):
-        loop = gmsh.model.occ.addSurfaceLoop(surfaces[i])
-        gmsh.model.occ.addVolume([loop])
+        loop = gmsh.model.occ.addSurfaceLoop(sides[i] + [tdata[i].surface, tdata[i+1].surface])
+        volumes[i] = gmsh.model.occ.addVolume([loop])
 
-
-
-    """
-    top_surface, top_bounds, top_points = build_terrain_surface('surface_40m.csv', 200)
-    mid_surface, mid_bounds, mid_points = build_terrain_surface('granitoid_40m.csv', 100)
-    bot_surface, bot_bounds, bot_points = build_terrain_surface('bottom_40m.csv', 500)
-
-    upper_surfaces = build_side_surfaces(mid_bounds, mid_points, top_bounds, top_points) + [top_surface, mid_surface]
-    lower_surfaces = build_side_surfaces(bot_bounds, bot_points, mid_bounds, mid_points) + [mid_surface, bot_surface]
-
-    gmsh.model.occ.removeAllDuplicates()
-    upper_loop = gmsh.model.occ.addSurfaceLoop(upper_surfaces)
-    upper_volume = gmsh.model.occ.addVolume([upper_loop])
-
-    lower_loop = gmsh.model.occ.addSurfaceLoop(lower_surfaces)
-    lower_volume = gmsh.model.occ.addVolume([lower_loop])
-    """
     gmsh.model.occ.synchronize()
+
+    # Volume labels
+    for i in range(len(args.volume_names)):
+        tag = gmsh.model.addPhysicalGroup(3, [volumes[i]])
+        gmsh.model.setPhysicalName(3, tag, args.volume_names[i])
+
+    # Terrain surfaces
+    for i in range(len(args.surface_names)):
+        tag = gmsh.model.addPhysicalGroup(2, [tdata[i].surface])
+        gmsh.model.setPhysicalName(2, tag, args.surface_names[i])
+
+    # Side surfaces
+    for i in range(len(args.volume_names)):
+        for name, side in zip(['front', 'right', 'back', 'left'], sides[i]):
+            tag = gmsh.model.addPhysicalGroup(2, [side])
+            gmsh.model.setPhysicalName(2, tag, f'{args.volume_names[i]}_{name}')
 
     gmsh.model.mesh.generate()
 
-    gmsh.fltk.run()
-    gmsh.finalize()
+    gmsh.write(args.output)
+    if args.show:
+        gmsh.fltk.run()
 
+    gmsh.finalize()
+    return 0
 
 def get_nodes(file_name: str, *,
               num_elements: typing.Optional[int] = None,
@@ -188,7 +216,6 @@ def get_nodes(file_name: str, *,
     return nodes, mesh_size
 
 def build_terrain_surface(file_name: str,
-                          surface_name: str,
                           *,
                           num_elements: typing.Optional[int] = None,
                           mesh_size: typing.Optional[float] = None) -> TerrainData:
@@ -214,7 +241,7 @@ def build_terrain_surface(file_name: str,
     gmsh.model.occ.synchronize()
 
     boundaries = gmsh.model.getBoundary([(2, surface)])
-    return TerrainData(surface, [b[1] for b in boundaries], points, surface_name)
+    return TerrainData(surface, [b[1] for b in boundaries], points)
 
 def build_side_surfaces(bot_lines: list, bot_points: numpy.ndarray,
                 top_lines: list, top_points: numpy.ndarray) -> list: # list[int]
@@ -253,8 +280,3 @@ def build_side_surfaces(bot_lines: list, bot_points: numpy.ndarray,
 
     gmsh.model.occ.synchronize()
     return surfaces
-
-
-
-if __name__ == '__main__':
-    main()
