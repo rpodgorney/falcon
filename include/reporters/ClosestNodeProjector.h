@@ -9,9 +9,9 @@
 
 #pragma once
 
-#include "GeneralReporter.h"
+#include "ClosestNodeBase.h"
 
-class ClosestNodeProjector : public GeneralReporter
+class ClosestNodeProjector : public ClosestNodeBase
 {
 public:
   static InputParameters validParams();
@@ -19,19 +19,10 @@ public:
   ClosestNodeProjector(const InputParameters & parameters);
 
   virtual void initialize() override {}
-  virtual void execute() override;
+  virtual void execute() override {}
   virtual void finalize() override {}
 
 protected:
-  const Real & _point_x;
-  const Real & _point_y;
-  const Real & _point_z;
   const Real & _point_value;
-  const Real _tolerance;
-
-  dof_id_type & _nid;
-  Real & _node_x;
-  Real & _node_y;
-  Real & _node_z;
   Real & _node_value;
 };
