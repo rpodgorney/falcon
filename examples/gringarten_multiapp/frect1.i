@@ -1,5 +1,5 @@
 # Cold water injection into one side of the fracture network, and production from the other side
-injection_rate = 25 # kg/s
+injection_rate = 0.1 #25 # kg/s
 endTime = 3.16e8
 [Mesh]
   uniform_refine = 0
@@ -178,7 +178,7 @@ endTime = 3.16e8
 [DiracKernels]
   [inject_fluid]
     type = PorousFlowPointSourceFromPostprocessor
-    mass_flux = 0.1 # kg/s
+    mass_flux = ${injection_rate}
     point = '0 -50 0'
     variable = frac_P
   []
