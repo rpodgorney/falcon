@@ -54,7 +54,7 @@
     point_x2 = pt/pt2_x
     point_y2 = pt/pt2_y
     point_z2 = pt/pt2_z
-    variable = z_id
+    variable_filter = z_id
     outputs = out
   []
 []
